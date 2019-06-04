@@ -7,19 +7,18 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.util.LinkedList;
+import java.util.HashMap;
 
 public class Server extends Thread {
-    private static LinkedList<String> oul = new LinkedList<>();
-    private static LinkedList<DataOutputStream> outs = new LinkedList<>();
     private static TreeNode users;
     private static ServerWindow sw;
+    private static int chatID = 1;
+    private static HashMap<String, DataOutputStream> oul = new HashMap<>();
+    private static HashMap<Integer, DataOutputStream[]> chats = new HashMap<>();
 
     public static void main(String[] args) throws IOException {
         int port = 300;
         ServerSocket ss = new ServerSocket(port);
-        oul = new LinkedList<>();
-        outs = new LinkedList<>();
         users = new TreeNode();
         sw = new ServerWindow(port);
         while(true){
@@ -44,7 +43,7 @@ public class Server extends Thread {
             f = new JFrame("ChatApp Server");
             header = new JLabel("Online users: " + oul.size(), JLabel.CENTER);
             exit = new JButton("Exit");
-            jl = new JList(oul.toArray());
+            jl = new JList(oul.keySet().toArray());
             exit.addActionListener(this);
             exit.setAlignmentX(Component.CENTER_ALIGNMENT);
             header.setAlignmentX(Component.CENTER_ALIGNMENT);
@@ -71,7 +70,7 @@ public class Server extends Thread {
 
         private void update() {
             header.setText("Online users: " + oul.size());
-            jl.setListData(oul.toArray());
+            jl.setListData(oul.keySet().toArray());
             f.pack();
         }
     }
@@ -126,17 +125,23 @@ public class Server extends Thread {
     }
 
     static class ClientThread extends Thread {
-        private DataInputStream in;
-        private DataOutputStream out;
-        private String user;
+        Socket s;
+        static private String user;
+        static DataOutputStream out;
+        DataInputStream in;
 
-        private ClientThread(Socket s) throws IOException {
-            this.in = new DataInputStream(s.getInputStream());
-            this.out = new DataOutputStream(s.getOutputStream());
+        private ClientThread(Socket s) {
+            this.s = s;
             user = null;
         }
 
         public void run() {
+            try {
+                in = new DataInputStream(s.getInputStream());
+                out = new DataOutputStream(s.getOutputStream());
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
             String pass, option;
             Boolean login = false;
             try {
@@ -146,7 +151,7 @@ public class Server extends Thread {
                         user = in.readUTF();
                         pass = in.readUTF();
                         if (option.equals("login")) {
-                            if (!oul.contains(user))
+                            if (!oul.containsKey(user))
                                 login = users.login(users, user, pass);
                         } else if (option.equals("create")) {
                             login = users.create(users, user, pass);
@@ -157,25 +162,125 @@ public class Server extends Thread {
                     }
                 }
                 out.writeInt(oul.size());
-                for (String s : oul)
+                for (String s : oul.keySet())
                     out.writeUTF(s);
-                oul.add(user);
-                sw.update();
             } catch (IOException e) {
                 oul.remove(user);
                 sw.update();
             }
-            for (DataOutputStream o : outs) {
-                try {
-                    o.writeInt(1);
-                    o.writeUTF(user);
-                } catch (IOException e) {
-                    e.printStackTrace();
+            for (String s : oul.keySet()) {
+                synchronized (oul.get(s)) {
+                    try {
+                        oul.get(s).writeInt(1);
+                        oul.get(s).writeUTF(user);
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
                 }
             }
-            outs.add(out);
-            //oul.remove(user);
-            //sw.update();
+            oul.put(user, out);
+            sw.update();
+
+            int run = 1;
+            Thread t = new HeartBeat();
+            t.start();
+            try {
+                while (run > 0) {
+                    run = in.readInt();
+                    synchronized (out) {
+                        switch (run) {
+                            case 1:
+                                newChat();
+                                break;
+                            case 2:
+                                newMsg();
+                                break;
+
+                        }
+                    }
+
+                }
+            } catch (IOException e) {
+                oul.remove(user);
+                sw.update();
+                for (String s : oul.keySet()) {
+                    synchronized (oul.get(s)) {
+                        try {
+                            oul.get(s).writeInt(2);
+                            oul.get(s).writeUTF(user);
+                        } catch (IOException e2) {
+                            e2.printStackTrace();
+                        }
+                    }
+                }
+            }
+        }
+
+        synchronized void newChat() throws IOException {
+            out.writeInt(4);
+            System.out.println("Assigned ChatID: " + chatID);
+            out.writeInt(chatID);
+            int num = in.readInt();
+            DataOutputStream[] chatusers = new DataOutputStream[num];
+            for (int i = 0; i < num; i++) {
+                chatusers[i] = oul.get(in.readUTF());
+            }
+            chats.put(chatID, chatusers);
+            System.out.println("Current Chat HashMap: " + chats);
+            chatID++;
+            System.out.println("New ChatID: " + chatID);
+        }
+
+        synchronized void newMsg() throws IOException {
+            int id = in.readInt();
+            String msg = in.readUTF();
+            System.out.println(id + " " + chats.get(id));
+            for (DataOutputStream o : chats.get(id)) {
+                o.write(3);
+                o.writeInt(id);
+                if (in.readBoolean() == false) {
+                    o.writeInt(chats.get(id).length);
+                    for (DataOutputStream o2 : chats.get(id))
+                        o.writeUTF(getUser(o2));
+                }
+                o.writeUTF(msg);
+            }
+        }
+
+        String getUser(DataOutputStream o) {
+            for (String u : oul.keySet()) {
+                if (o == oul.get(u))
+                    return u;
+            }
+            return null;
+        }
+
+        static class HeartBeat extends Thread {
+            public void run() {
+                try {
+                    while (true) {
+                        sleep(60 * 1000);
+                        synchronized (out) {
+                            out.writeInt(0);
+                        }
+                    }
+                } catch (IOException e) {
+                    oul.remove(user);
+                    sw.update();
+                    for (String s : oul.keySet()) {
+                        synchronized (oul.get(s)) {
+                            try {
+                                oul.get(s).writeInt(2);
+                                oul.get(s).writeUTF(user);
+                            } catch (IOException e2) {
+                                e2.printStackTrace();
+                            }
+                        }
+                    }
+                } catch (InterruptedException ie) {
+                    ie.printStackTrace();
+                }
+            }
         }
     }
 }
