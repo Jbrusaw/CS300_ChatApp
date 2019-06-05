@@ -10,24 +10,15 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 
+import static java.lang.Integer.parseInt;
+
 public class Client extends Thread {
 
-    private static DataOutputStream out;
-    private static DataInputStream in;
-    private static String serverName = "localhost";
-    private static int port = 300;
-    private static DefaultListModel<String> oul;
-    private static JPanel userlog;
-    private static String username;
-    private static JFrame f;
-    private static HashMap<Integer, ChatWindow> windows = new HashMap<>();
-
     public static void main(String[] args) {
+        String serverName = "localhost";
+        int port = 300;
         try {
-            Socket client = new Socket(serverName, port);
-            out = new DataOutputStream(client.getOutputStream());
-            in = new DataInputStream(client.getInputStream());
-            new LoginWindow();
+            new LoginWindow(new Socket(serverName, port));
 
         } catch (IOException e) {
             e.printStackTrace();
@@ -38,11 +29,18 @@ public class Client extends Thread {
         JTextField user;
         JPasswordField pass;
         JLabel header;
-        JButton log, create, group;
-        static JFrame f;
-        static JList<String> online;
+        JButton log, create;
+        JFrame f;
+        DataInputStream in;
+        DataOutputStream out;
 
-        LoginWindow() {
+        LoginWindow(Socket s) {
+            try {
+                in = new DataInputStream(s.getInputStream());
+                out = new DataOutputStream(s.getOutputStream());
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
 
             f = new JFrame("Welcome to ChatApp");
             user = new JTextField(20);
@@ -87,9 +85,10 @@ public class Client extends Thread {
                     header.setText("Username must be 3+ characters");
                 else if (ps.length() < 3)
                     header.setText("Password must be 3+ characters");
-                else if (login(us, ps))
-                    LaunchOUL();
-                else
+                else if (login(us, ps)) {
+                    f.dispose();
+                    new OULWindow(us, in, out);
+                } else
                     header.setText("Login failed. Try again");
             } else if (ae.getSource() == create) {
                 String us = user.getText();
@@ -98,16 +97,11 @@ public class Client extends Thread {
                     header.setText("Username must be 3+ characters");
                 else if (ps.length() < 3)
                     header.setText("Password must be 3+ characters");
-                else if (createAccount(us, ps))
-                    LaunchOUL();
-                else
+                else if (createAccount(us, ps)) {
+                    f.dispose();
+                    new OULWindow(us, in, out);
+                } else
                     header.setText("Username taken. Try again");
-            } else if (ae.getSource() == group) {
-                try {
-                    out.writeInt(1);
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
             }
         }
 
@@ -134,67 +128,100 @@ public class Client extends Thread {
             }
             return false;
         }
+    }
 
-        private void LaunchOUL() {
-            username = user.getText();
-            f.dispose();
+    static class OULWindow implements ActionListener {
+        static String username;
+        static DataInputStream in;
+        static DataOutputStream out;
+        static DefaultListModel<String> oul;
+        static JList<String> online;
+        static JPanel userLog;
+        JButton group, quit;
+        static JFrame f;
+        static HashMap<Integer, ChatWindow> windows = new HashMap<>();
+
+        OULWindow(String user, DataInputStream dIn, DataOutputStream dOut) {
+            username = user;
+            in = dIn;
+            out = dOut;
             JOptionPane.showMessageDialog(null, "Login Successful!");
             oul = new DefaultListModel<>();
-            userlog = new JPanel();
-            userlog.setLayout(new BoxLayout(userlog, BoxLayout.Y_AXIS));
+            userLog = new JPanel();
+            userLog.setLayout(new BoxLayout(userLog, BoxLayout.Y_AXIS));
             try {
-                int oulnum = in.readInt();
-                for (int i = 0; i < oulnum; i++) {
+                int oulNum = in.readInt();
+                for (int i = 0; i < oulNum; i++) {
                     oul.addElement(in.readUTF());
                 }
-                online = new JList(oul);
+                online = new JList<>(oul);
                 oul.removeElement(user);
             } catch (IOException e) {
                 e.printStackTrace();
             }
             Thread t = new Input();
             t.start();
-            f.removeAll();
             f = new JFrame(username);
-            header.setText("Select user(s) you'd like to chat with: ");
+            JLabel header = new JLabel("Select user(s) you'd like to chat with: ");
+            header.setAlignmentX(Component.CENTER_ALIGNMENT);
             group = new JButton("Create Chat Group");
-            group.setAlignmentX(Component.CENTER_ALIGNMENT);
+            group.setAlignmentX(Component.LEFT_ALIGNMENT);
             group.addActionListener(this);
+            quit = new JButton("Quit");
+            quit.setAlignmentX(Component.RIGHT_ALIGNMENT);
+            quit.addActionListener(this);
+            JPanel buttons = new JPanel();
+            buttons.add(group);
+            buttons.add(quit);
+            buttons.setLayout(new FlowLayout());
             JScrollPane list = new JScrollPane(online);
             list.setAlignmentX(Component.CENTER_ALIGNMENT);
             JPanel listPane = new JPanel();
             listPane.setLayout(new BoxLayout(listPane, BoxLayout.Y_AXIS));
             listPane.add(list);
-            JScrollPane loginlist = new JScrollPane(userlog);
-            listPane.add(loginlist);
+            listPane.add(new JScrollPane(userLog));
             listPane.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
             f.add(header);
             f.add(listPane);
-            f.add(group);
+            f.add(buttons);
             f.add(Box.createRigidArea(new Dimension(0, 5)));
             f.setLayout(new BoxLayout(f.getContentPane(), BoxLayout.Y_AXIS));
             f.pack();
             f.setVisible(true);
-            f.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+            f.setDefaultCloseOperation(JFrame.DO_NOTHING_ON_CLOSE);
+        }
+
+        public void actionPerformed(ActionEvent ae) {
+            try {
+                if (ae.getSource() == group) {
+                    out.writeUTF("group");
+                } else if (ae.getSource() == quit) {
+                    out.writeUTF("quit");
+                    System.exit(1);
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
         }
 
         static class Input extends Thread {
             public void run() {
                 try {
                     while (true) {
-                        int parse = in.readInt();
-                        switch (parse) {
-                            case 1:
-                                newLogon();
+                        String input = in.readUTF();
+                        switch (input) {
+                            case "login":
+                                newLogin();
                                 break;
-                            case 2:
+                            case "logoff":
                                 newLogoff();
                                 break;
-                            case 3:
+                            case "msg":
                                 newMessage();
                                 break;
-                            case 4:
+                            case "group":
                                 newGroup();
+                                break;
                             default:
                                 break;
                         }
@@ -205,46 +232,47 @@ public class Client extends Thread {
                 }
             }
 
-            private void newLogon() throws IOException {
+            private void newLogin() throws IOException {
                 String input = in.readUTF();
-                userlog.add(new JLabel(input + " has logged on!\n"));
+                JLabel j = new JLabel(input + " has logged on!\n");
+                j.setForeground(Color.green.darker());
+                userLog.add(j);
                 oul.addElement(input);
                 f.pack();
             }
 
             private void newLogoff() throws IOException {
                 String input = in.readUTF();
-                userlog.add(new JLabel(input + " has logged off!\n"));
+                JLabel j = new JLabel(input + " has logged off!\n");
+                j.setForeground(Color.red);
+                userLog.add(j);
                 oul.removeElement(input);
                 f.pack();
             }
 
-            //TODO: this
             private void newMessage() throws IOException {
-                int id = in.readInt();
-                if (windows.containsKey(id))
-                    out.writeBoolean(true);
-                else {
-                    out.writeBoolean(false);
-                    int num = in.readInt();
-                    List<String> users = new ArrayList<>();
-                    for (int i = 0; i < num; i++)
-                        users.add(in.readUTF());
-                    windows.put(id, new ChatWindow(id, users));
+                int id = parseInt(in.readUTF());
+                int num = parseInt(in.readUTF());
+                List<String> users = new ArrayList<>();
+                for (int i = 0; i < num; i++) {
+                    users.add(in.readUTF());
                 }
-                windows.get(id).f.setVisible(true);
-                windows.get(id).chats.append(in.readUTF() + '\n');
-                windows.get(id).f.pack();
+                if (!windows.containsKey(id))
+                    windows.put(id, new ChatWindow(id, users));
+                windows.get(id).newMsg(in.readUTF());
             }
 
             private void newGroup() throws IOException {
-                int id = in.readInt();
+                int id = parseInt(in.readUTF());
                 out.writeInt(online.getSelectedValuesList().size() + 1);
                 out.writeUTF(username);
+                List<String> users = new ArrayList<>();
                 for (String s : online.getSelectedValuesList()) {
                     out.writeUTF(s);
+                    users.add(s);
                 }
-                windows.put(id, new ChatWindow(id, online.getSelectedValuesList()));
+                users.add(username);
+                windows.put(id, new ChatWindow(id, users));
             }
         }
     }
@@ -260,30 +288,16 @@ public class Client extends Thread {
                 JOptionPane.showMessageDialog(null, "You must select at least 1 user!");
                 return;
             }
-            System.out.println("ID before assgn: " + chatID);
-            if (id == 0) {
-                synchronized (out) {
-                    try {
-                        out.writeInt(1);
-                        chatID = in.readInt();
-                        out.writeInt(users.size());
-                        for (String s : users) {
-                            out.writeUTF(s);
-                        }
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                    }
-                }
-            } else
-                chatID = id;
-            System.out.println("ID after assgn: " + chatID);
+            chatID = id;
             this.users = users;
-            windows.put(chatID, this);
-            String head = "Chatting with ";
+            StringBuilder head = new StringBuilder("Conversation with ");
             for (String s : users) {
-                head += s + ", ";
+                if (!s.equalsIgnoreCase(OULWindow.username)) {
+                    head.append(s);
+                    head.append(", ");
+                }
             }
-            head = head.substring(0, head.length() - 2);
+            String header = head.substring(0, head.length() - 2);
 
             chats = new JTextArea();
             chats.setEditable(false);
@@ -297,7 +311,7 @@ public class Client extends Thread {
 
             JPanel jp1 = new JPanel();
             jp1.setLayout(new FlowLayout());
-            jp1.add(new JLabel(head));
+            jp1.add(new JLabel(header));
             jp1.setAlignmentX(Component.CENTER_ALIGNMENT);
 
             JPanel jp2 = new JPanel();
@@ -315,7 +329,7 @@ public class Client extends Thread {
             jp4.add(send);
             jp4.setAlignmentX(Component.CENTER_ALIGNMENT);
 
-            f = new JFrame(username);
+            f = new JFrame(OULWindow.username);
             f.add(jp1);
             f.add(jp2);
             f.add(jp3);
@@ -327,15 +341,20 @@ public class Client extends Thread {
         }
 
         public void actionPerformed(ActionEvent ae) {
-            //TODO: make the 'send' button do something useful
             try {
-                out.writeInt(2);
-                out.writeInt(chatID);
-                out.writeUTF(username + ": " + msg.getText());
+                OULWindow.out.writeUTF("msg");
+                OULWindow.out.writeInt(chatID);
+                OULWindow.out.writeUTF(OULWindow.username + ": " + msg.getText());
                 msg.setText(null);
             } catch (IOException e) {
                 e.printStackTrace();
             }
+        }
+
+        private void newMsg(String msg) {
+            chats.append(msg + '\n');
+            f.pack();
+            f.setVisible(true);
         }
     }
 }
